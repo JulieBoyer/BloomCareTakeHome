@@ -3,72 +3,106 @@
 from .models import Assignment, Caregiver, Visit
 
 
+
+from collections import defaultdict
+
 def solve(visits: list[Visit], caregivers: list[Caregiver]) -> list[Assignment]:
     """
-    Solve the scheduling problem.
-
-    Args:
-        visits: List of visits to be assigned
-        caregivers: List of available caregivers
-
-    Returns:
-        List of Assignment objects representing which caregiver
-          is assigned to which visit
+    Résout le problème d'affectation des visites aux soignants en maximisant la continuité de soin
+    (même soignant pour un client) tout en respectant les contraintes et en gardant un bon travel efficiency.
     """
-    # 1. Préparer les structures de suivi
-    from collections import defaultdict
-    import heapq
     assignments = []
     caregiver_hours = defaultdict(float)  # id -> heures assignées
     caregiver_daily_visits = defaultdict(lambda: defaultdict(list))  # id -> day -> [visits]
 
-    # 2. Trier les visites par date de début (priorité aux plus tôt)
-    visits_sorted = sorted(visits, key=lambda v: v.start)
+    visits_by_customer = group_visits_by_customer(visits)
 
-    # 3. Pour chaque visite, essayer d'affecter un soignant valide
-    for visit in visits_sorted:
-        # Lister les soignants éligibles (compétence, disponibilité, pas d'overlap, pas au-delà max heures)
-        eligible = []
-        for caregiver in caregivers:
-            # Compétence requise
-            if visit.required_skill not in caregiver.skills:
-                continue
-            # Disponibilité sur le créneau
-            if not any(av.check_availability(visit) for av in caregiver.availability):
-                continue
-            # Pas d'overlap avec d'autres visites déjà assignées ce jour-là
-            day = visit.start.strftime("%A")
-            overlap = any(visit.overlaps(v) for v in caregiver_daily_visits[caregiver.id][day])
-            if overlap:
-                continue
-            # Respect du quota d'heures
-            visit_hours = (visit.end - visit.start).total_seconds() / 3600.0
-            if caregiver_hours[caregiver.id] + visit_hours > caregiver.max_hours:
-                continue
-            # Ajout à la liste des candidats (on peut pondérer pour bonus: ex. nombre de visites déjà faites pour ce client)
-            # Pour la continuité de soin, on favorise le soignant ayant déjà vu ce client
-            continuity_bonus = sum(
-                v.customer == visit.customer for day_visits in caregiver_daily_visits[caregiver.id].values() for v in day_visits
-            )
-            # Pour l'efficacité de déplacement, on favorise le soignant déjà dans le même quartier juste avant
-            last_same_day = sorted(caregiver_daily_visits[caregiver.id][day], key=lambda v: v.end)
-            travel_bonus = 0
-            if last_same_day:
-                last_visit = last_same_day[-1]
-                if last_visit.neighborhood == visit.neighborhood:
-                    travel_bonus = 1
-            # Score: plus haut = mieux (on veut max continuity et travel)
-            score = (continuity_bonus * 2) + travel_bonus
-            eligible.append((-score, caregiver_hours[caregiver.id], caregiver.id, caregiver, continuity_bonus, travel_bonus))
-
-        # Trier les candidats: d'abord le score, puis le moins d'heures déjà faites
-        if eligible:
-            heapq.heapify(eligible)
-            _, _, _, chosen, _, _ = heapq.heappop(eligible)
-            assignments.append(Assignment(visit_id=visit.id, caregiver_id=chosen.id))
-            caregiver_hours[chosen.id] += (visit.end - visit.start).total_seconds() / 3600.0
-            caregiver_daily_visits[chosen.id][visit.start.strftime("%A")].append(visit)
-        # Sinon, la visite reste non assignée (sera listée dans les violations)
-
-    # Retourner la liste des affectations
+    for customer, customer_visits in visits_by_customer.items():
+        customer_visits = sorted(customer_visits, key=lambda v: v.start)
+        chosen = find_best_caregiver_for_customer(customer, customer_visits, caregivers, caregiver_hours, caregiver_daily_visits)
+        if chosen:
+            assign_all_visits_to_caregiver(assignments, customer_visits, chosen, caregiver_hours, caregiver_daily_visits)
+        else:
+            for visit in customer_visits:
+                chosen = find_best_caregiver_for_visit(visit, caregivers, caregiver_hours, caregiver_daily_visits)
+                if chosen:
+                    assign_visit(assignments, visit, chosen, caregiver_hours, caregiver_daily_visits)
     return assignments
+
+
+def group_visits_by_customer(visits):
+    visits_by_customer = defaultdict(list)
+    for v in visits:
+        visits_by_customer[v.customer].append(v)
+    return visits_by_customer
+
+
+def find_best_caregiver_for_customer(customer, customer_visits, caregivers, caregiver_hours, caregiver_daily_visits):
+    possible_caregivers = []
+    for caregiver in caregivers:
+        ok = True
+        temp_hours = caregiver_hours[caregiver.id]
+        temp_daily = {day: list(day_visits) for day, day_visits in caregiver_daily_visits[caregiver.id].items()}
+        for visit in customer_visits:
+            if not is_caregiver_eligible_for_visit(caregiver, visit, temp_hours, temp_daily):
+                ok = False
+                break
+            visit_hours = (visit.end - visit.start).total_seconds() / 3600.0
+            temp_hours += visit_hours
+            day = visit.start.strftime("%A")
+            temp_daily.setdefault(day, []).append(visit)
+        if ok:
+            continuity_bonus = sum(
+                v.customer == customer for day_visits in caregiver_daily_visits[caregiver.id].values() for v in day_visits
+            )
+            possible_caregivers.append((-continuity_bonus, caregiver_hours[caregiver.id], caregiver))
+    if possible_caregivers:
+        possible_caregivers.sort(key=lambda x: (x[0], x[1]))
+        return possible_caregivers[0][2]
+    return None
+
+
+def find_best_caregiver_for_visit(visit, caregivers, caregiver_hours, caregiver_daily_visits):
+    eligible = []
+    for caregiver in caregivers:
+        if not is_caregiver_eligible_for_visit(caregiver, visit, caregiver_hours[caregiver.id], caregiver_daily_visits[caregiver.id]):
+            continue
+        day = visit.start.strftime("%A")
+        last_same_day = sorted(caregiver_daily_visits[caregiver.id][day], key=lambda v: v.end)
+        travel_bonus = 0
+        if last_same_day:
+            last_visit = last_same_day[-1]
+            if last_visit.neighborhood == visit.neighborhood:
+                travel_bonus = 1
+        eligible.append((-travel_bonus, caregiver_hours[caregiver.id], caregiver))
+    if eligible:
+        eligible.sort(key=lambda x: (x[0], x[1]))
+        return eligible[0][2]
+    return None
+
+
+def is_caregiver_eligible_for_visit(caregiver, visit, current_hours, daily_visits):
+    if visit.required_skill not in caregiver.skills:
+        return False
+    if not any(av.check_availability(visit) for av in caregiver.availability):
+        return False
+    day = visit.start.strftime("%A")
+    if any(visit.overlaps(v) for v in daily_visits.get(day, [])):
+        return False
+    visit_hours = (visit.end - visit.start).total_seconds() / 3600.0
+    if current_hours + visit_hours > caregiver.max_hours:
+        return False
+    return True
+
+
+def assign_all_visits_to_caregiver(assignments, visits, caregiver, caregiver_hours, caregiver_daily_visits):
+    for visit in visits:
+        assign_visit(assignments, visit, caregiver, caregiver_hours, caregiver_daily_visits)
+
+
+def assign_visit(assignments, visit, caregiver, caregiver_hours, caregiver_daily_visits):
+    assignments.append(Assignment(visit_id=visit.id, caregiver_id=caregiver.id))
+    visit_hours = (visit.end - visit.start).total_seconds() / 3600.0
+    caregiver_hours[caregiver.id] += visit_hours
+    day = visit.start.strftime("%A")
+    caregiver_daily_visits[caregiver.id][day].append(visit)
