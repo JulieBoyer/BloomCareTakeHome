@@ -1,4 +1,4 @@
-"""Solver module for the Bloom Care scheduling problem."""
+"""Solver module for the Bloom Care OR Take-home Test."""
 
 from .models import Assignment, Caregiver, Visit
 
@@ -8,36 +8,60 @@ from collections import defaultdict
 
 def solve(visits: list[Visit], caregivers: list[Caregiver]) -> list[Assignment]:
     """
-    Résout le problème d'affectation des visites aux soignants en maximisant la continuité de soin
-    (même soignant pour un client) tout en respectant les contraintes et en gardant un bon travel efficiency.
+    Assigns caregivers to visits while maximizing continuity of care (same caregiver per client),
+    respecting all constraints and optimizing travel efficiency.
+
+    Args:
+        visits: List of Visit objects to be assigned.
+        caregivers: List of available Caregiver objects.
+
+    Returns:
+        List of Assignment objects representing the schedule.
     """
     assignments = []
-    caregiver_hours = defaultdict(float)  # id -> heures assignées
-    caregiver_daily_visits = defaultdict(lambda: defaultdict(list))  # id -> day -> [visits]
+    caregiver_hours = defaultdict(float)  # Caregiver id -> total assigned hours
+    caregiver_daily_visits = defaultdict(lambda: defaultdict(list))  # Caregiver id -> day -> [visits]
 
     visits_by_customer = group_visits_by_customer(visits)
 
     for customer, customer_visits in visits_by_customer.items():
         customer_visits = sorted(customer_visits, key=lambda v: v.start)
-        chosen = find_best_caregiver_for_customer(customer, customer_visits, caregivers, caregiver_hours, caregiver_daily_visits)
+        chosen = find_best_caregiver_for_customer(
+            customer, customer_visits, caregivers, caregiver_hours, caregiver_daily_visits
+        )
         if chosen:
-            assign_all_visits_to_caregiver(assignments, customer_visits, chosen, caregiver_hours, caregiver_daily_visits)
+            assign_all_visits_to_caregiver(
+                assignments, customer_visits, chosen, caregiver_hours, caregiver_daily_visits
+            )
         else:
             for visit in customer_visits:
-                chosen = find_best_caregiver_for_visit(visit, caregivers, caregiver_hours, caregiver_daily_visits)
+                chosen = find_best_caregiver_for_visit(
+                    visit, caregivers, caregiver_hours, caregiver_daily_visits
+                )
                 if chosen:
                     assign_visit(assignments, visit, chosen, caregiver_hours, caregiver_daily_visits)
     return assignments
 
 
-def group_visits_by_customer(visits):
+def group_visits_by_customer(visits: list[Visit]) -> dict:
+    """Group visits by customer name."""
     visits_by_customer = defaultdict(list)
     for v in visits:
         visits_by_customer[v.customer].append(v)
     return visits_by_customer
 
 
-def find_best_caregiver_for_customer(customer, customer_visits, caregivers, caregiver_hours, caregiver_daily_visits):
+def find_best_caregiver_for_customer(
+    customer: str,
+    customer_visits: list[Visit],
+    caregivers: list[Caregiver],
+    caregiver_hours,
+    caregiver_daily_visits,
+) -> Caregiver | None:
+    """
+    Find the best caregiver able to take all visits for a customer, minimizing neighborhood switches per day.
+    Returns None if no caregiver can take all visits.
+    """
     possible_caregivers = []
     for caregiver in caregivers:
         ok = True
@@ -74,7 +98,17 @@ def find_best_caregiver_for_customer(customer, customer_visits, caregivers, care
     return None
 
 
-def find_best_caregiver_for_visit(visit, caregivers, caregiver_hours, caregiver_daily_visits):
+def find_best_caregiver_for_visit(
+    visit: Visit,
+    caregivers: list[Caregiver],
+    caregiver_hours,
+    caregiver_daily_visits,
+) -> Caregiver | None:
+    """
+    Find the best caregiver for a single visit, prioritizing continuity (already seen client),
+    then travel efficiency (same neighborhood), then lowest assigned hours.
+    Returns None if no eligible caregiver.
+    """
     eligible = []
     for caregiver in caregivers:
         if not is_caregiver_eligible_for_visit(caregiver, visit, caregiver_hours[caregiver.id], caregiver_daily_visits[caregiver.id]):
@@ -93,7 +127,15 @@ def find_best_caregiver_for_visit(visit, caregivers, caregiver_hours, caregiver_
     return None
 
 
-def is_caregiver_eligible_for_visit(caregiver, visit, current_hours, daily_visits):
+def is_caregiver_eligible_for_visit(
+    caregiver: Caregiver,
+    visit: Visit,
+    current_hours: float,
+    daily_visits,
+) -> bool:
+    """
+    Check if a caregiver can be assigned to a visit (skills, availability, no overlap, max hours).
+    """
     if visit.required_skill not in caregiver.skills:
         return False
     if not any(av.check_availability(visit) for av in caregiver.availability):
@@ -107,7 +149,16 @@ def is_caregiver_eligible_for_visit(caregiver, visit, current_hours, daily_visit
     return True
 
 
-def assign_all_visits_to_caregiver(assignments, visits, caregiver, caregiver_hours, caregiver_daily_visits):
+def assign_all_visits_to_caregiver(
+    assignments: list[Assignment],
+    visits: list[Visit],
+    caregiver: Caregiver,
+    caregiver_hours,
+    caregiver_daily_visits,
+):
+    """
+    Assign all visits to a caregiver, ordering visits per day to minimize neighborhood switches.
+    """
     # Regrouper les visites par jour
     visits_by_day = defaultdict(list)
     for visit in visits:
@@ -148,7 +199,16 @@ def assign_all_visits_to_caregiver(assignments, visits, caregiver, caregiver_hou
         assign_visit(assignments, visit, caregiver, caregiver_hours, caregiver_daily_visits)
 
 
-def assign_visit(assignments, visit, caregiver, caregiver_hours, caregiver_daily_visits):
+def assign_visit(
+    assignments: list[Assignment],
+    visit: Visit,
+    caregiver: Caregiver,
+    caregiver_hours,
+    caregiver_daily_visits,
+):
+    """
+    Assign a single visit to a caregiver and update tracking structures.
+    """
     assignments.append(Assignment(visit_id=visit.id, caregiver_id=caregiver.id))
     visit_hours = (visit.end - visit.start).total_seconds() / 3600.0
     caregiver_hours[caregiver.id] += visit_hours
