@@ -43,6 +43,7 @@ def find_best_caregiver_for_customer(customer, customer_visits, caregivers, care
         ok = True
         temp_hours = caregiver_hours[caregiver.id]
         temp_daily = {day: list(day_visits) for day, day_visits in caregiver_daily_visits[caregiver.id].items()}
+        # Simuler l'affectation de toutes les visites de ce client à ce soignant
         for visit in customer_visits:
             if not is_caregiver_eligible_for_visit(caregiver, visit, temp_hours, temp_daily):
                 ok = False
@@ -52,13 +53,24 @@ def find_best_caregiver_for_customer(customer, customer_visits, caregivers, care
             day = visit.start.strftime("%A")
             temp_daily.setdefault(day, []).append(visit)
         if ok:
+            # Calculer le nombre de switches de quartier par jour (travel inefficiency)
+            switches = 0
+            for day, visits_in_day in temp_daily.items():
+                if len(visits_in_day) > 1:
+                    visits_in_day_sorted = sorted(visits_in_day, key=lambda v: v.start)
+                    current_neigh = visits_in_day_sorted[0].neighborhood
+                    for v in visits_in_day_sorted[1:]:
+                        if v.neighborhood != current_neigh:
+                            switches += 1
+                            current_neigh = v.neighborhood
             continuity_bonus = sum(
                 v.customer == customer for day_visits in caregiver_daily_visits[caregiver.id].values() for v in day_visits
             )
-            possible_caregivers.append((-continuity_bonus, caregiver_hours[caregiver.id], caregiver))
+            # On veut minimiser les switches, puis les heures, puis maximiser la continuité
+            possible_caregivers.append((switches, caregiver_hours[caregiver.id], -continuity_bonus, caregiver))
     if possible_caregivers:
-        possible_caregivers.sort(key=lambda x: (x[0], x[1]))
-        return possible_caregivers[0][2]
+        possible_caregivers.sort(key=lambda x: (x[0], x[1], x[2]))
+        return possible_caregivers[0][3]
     return None
 
 
