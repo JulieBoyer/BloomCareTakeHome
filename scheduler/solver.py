@@ -108,7 +108,43 @@ def is_caregiver_eligible_for_visit(caregiver, visit, current_hours, daily_visit
 
 
 def assign_all_visits_to_caregiver(assignments, visits, caregiver, caregiver_hours, caregiver_daily_visits):
+    # Regrouper les visites par jour
+    visits_by_day = defaultdict(list)
     for visit in visits:
+        day = visit.start.strftime("%A")
+        visits_by_day[day].append(visit)
+
+    # Pour chaque jour, ordonner les visites pour minimiser les switches de quartier
+    ordered_visits = []
+    for day, day_visits in visits_by_day.items():
+        # Utiliser une liste pour to_assign car Visit n'est pas hashable
+        to_assign = list(day_visits)
+        if not to_assign:
+            continue
+        # Commencer par la visite la plus tôt
+        current = min(to_assign, key=lambda v: v.start)
+        ordered = [current]
+        to_assign.remove(current)
+        while to_assign:
+            # Chercher une visite dans le même quartier qui commence après la précédente
+            next_visits = [v for v in to_assign if v.neighborhood == current.neighborhood and v.start >= current.end]
+            if next_visits:
+                next_visit = min(next_visits, key=lambda v: v.start)
+            else:
+                # Sinon, prendre la visite la plus tôt possible
+                next_visits = [v for v in to_assign if v.start >= current.end]
+                if next_visits:
+                    next_visit = min(next_visits, key=lambda v: v.start)
+                else:
+                    # Si aucune visite ne commence après la précédente, prendre n'importe laquelle
+                    next_visit = min(to_assign, key=lambda v: v.start)
+            ordered.append(next_visit)
+            to_assign.remove(next_visit)
+            current = next_visit
+        ordered_visits.extend(ordered)
+
+    # Réaffecter les visites dans l'ordre optimisé
+    for visit in sorted(ordered_visits, key=lambda v: v.start):
         assign_visit(assignments, visit, caregiver, caregiver_hours, caregiver_daily_visits)
 
 
